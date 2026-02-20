@@ -161,15 +161,15 @@ function handleTranscriptText(text) {
   }
 
   const cleaned = text.trim();
-  if (cleaned.length < 2 || isDuplicateTranscript(cleaned)) {
+  if (cleaned.length < 3 || isDuplicateTranscript(cleaned)) {
     return;
   }
 
   state.allTranscript += `${cleaned}\n`;
   renderTranscript();
-  harvestFacts(text);
+  harvestFacts(cleaned);
 
-  if (!state.summaryRequested && containsRendben(text)) {
+  if (!state.summaryRequested && containsRendben(cleaned)) {
     requestSummaryAndStopCall();
   }
 }
@@ -197,22 +197,50 @@ async function requestSummaryAndStopCall() {
   }
 }
 
-function extractTranscriptText(payload) {
+function extractTranscriptData(payload) {
   if (!payload) {
-    return '';
+    return { text: '', isPartial: false, confidence: undefined };
   }
 
   if (typeof payload === 'string') {
-    return payload;
+    return { text: payload, isPartial: false, confidence: undefined };
   }
 
-  return (
-    payload.transcript ||
-    payload.text ||
-    payload.content ||
-    payload?.result?.transcript ||
-    ''
-  );
+  const text = payload.transcript || payload.text || payload.content || payload?.result?.transcript || '';
+
+  const partialFlags = [
+    payload.type === 'transcript-partial',
+    payload.isPartial === true,
+    payload.partial === true,
+    payload?.result?.isPartial === true
+  ];
+
+  const confidence =
+    (typeof payload.confidence === 'number' && payload.confidence) ||
+    (typeof payload?.result?.confidence === 'number' && payload.result.confidence) ||
+    undefined;
+
+  return {
+    text,
+    isPartial: partialFlags.some(Boolean),
+    confidence
+  };
+}
+
+function shouldAcceptTranscript(data) {
+  if (!data || !data.text) {
+    return false;
+  }
+
+  if (data.isPartial) {
+    return false;
+  }
+
+  if (typeof data.confidence === 'number' && data.confidence < 0.45) {
+    return false;
+  }
+
+  return true;
 }
 
 function requestSummaryFromVapi() {
@@ -268,7 +296,10 @@ function attachVapiEventsOnce() {
   });
 
   state.vapi.on('transcript', (payload) => {
-    handleTranscriptText(extractTranscriptText(payload));
+    const data = extractTranscriptData(payload);
+    if (shouldAcceptTranscript(data)) {
+      handleTranscriptText(data.text);
+    }
   });
 
   state.vapi.on('message', (message) => {
@@ -277,7 +308,10 @@ function attachVapiEventsOnce() {
     }
 
     if (message.type === 'transcript' || message.type === 'transcript-partial') {
-      handleTranscriptText(extractTranscriptText(message));
+      const data = extractTranscriptData(message);
+      if (shouldAcceptTranscript(data)) {
+        handleTranscriptText(data.text);
+      }
       return;
     }
 
