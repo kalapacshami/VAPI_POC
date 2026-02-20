@@ -11,7 +11,8 @@ const state = {
   lastTranscriptText: '',
   lastTranscriptAt: 0,
   errorCount: 0,
-  lastErrorAt: 0
+  lastErrorAt: 0,
+  stopRequestedAfterKeyword: false
 };
 
 const HUNGARIAN_SYSTEM_PROMPT = `A felhasználó magyarul beszél.
@@ -151,6 +152,10 @@ function maybeReportNonFatalError(error) {
 }
 
 function handleTranscriptText(text) {
+  if (state.stopRequestedAfterKeyword) {
+    return;
+  }
+
   if (!text || typeof text !== 'string') {
     return;
   }
@@ -165,7 +170,30 @@ function handleTranscriptText(text) {
   harvestFacts(text);
 
   if (!state.summaryRequested && containsRendben(text)) {
-    requestSummaryFromVapi();
+    requestSummaryAndStopCall();
+  }
+}
+
+
+async function requestSummaryAndStopCall() {
+  requestSummaryFromVapi();
+  setStatus('"Rendben" észlelve. Hívás lezárása, további leirat leállítva...');
+
+  state.stopRequestedAfterKeyword = true;
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    if (state.vapi && state.listening) {
+      state.vapi.stop();
+    }
+  } catch (error) {
+    console.error(error);
+  } finally {
+    state.listening = false;
+    ui.startBtn.disabled = false;
+    ui.stopBtn.disabled = true;
+    stopAudioMuteObserver();
+    setStatus('Hívás lezárva a "Rendben" kulcsszó után.');
   }
 }
 
@@ -230,6 +258,12 @@ function attachVapiEventsOnce() {
     ui.startBtn.disabled = false;
     ui.stopBtn.disabled = true;
     stopAudioMuteObserver();
+
+    if (state.stopRequestedAfterKeyword) {
+      setStatus('Hívás lezárva a "Rendben" kulcsszó után.');
+      return;
+    }
+
     setStatus('Hívás lezárva.');
   });
 
@@ -303,6 +337,7 @@ function resetUiForNewSession() {
   state.allTranscript = '';
   state.summaryRequested = false;
   state.summaryText = '';
+  state.stopRequestedAfterKeyword = false;
   state.lastTranscriptText = '';
   state.lastTranscriptAt = 0;
   state.errorCount = 0;
