@@ -4,8 +4,42 @@ const state = {
   allTranscript: '',
   summaryRequested: false,
   summaryText: '',
-  renderedFacts: new Set()
+  renderedFacts: new Set(),
+  eventsAttached: false
 };
+
+
+let VapiConstructor = null;
+
+async function loadVapiConstructor() {
+  if (VapiConstructor) {
+    return VapiConstructor;
+  }
+
+  if (typeof window !== 'undefined' && typeof window.Vapi !== 'undefined') {
+    VapiConstructor = window.Vapi;
+    return VapiConstructor;
+  }
+
+  const moduleUrls = [
+    'https://esm.sh/@vapi-ai/web',
+    'https://cdn.jsdelivr.net/npm/@vapi-ai/web/+esm'
+  ];
+
+  for (const moduleUrl of moduleUrls) {
+    try {
+      const mod = await import(moduleUrl);
+      VapiConstructor = mod.default || mod.Vapi || mod;
+      if (typeof VapiConstructor === 'function') {
+        return VapiConstructor;
+      }
+    } catch (error) {
+      console.warn(`Vapi import sikertelen: ${moduleUrl}`, error);
+    }
+  }
+
+  throw new Error('A Vapi SDK nem tölthető be a CDN-ről.');
+}
 
 const ui = {
   publicKey: document.getElementById('publicKey'),
@@ -31,6 +65,7 @@ function addFact(text) {
   if (!cleaned || state.renderedFacts.has(cleaned)) {
     return;
   }
+
   state.renderedFacts.add(cleaned);
   const li = document.createElement('li');
   li.textContent = cleaned;
@@ -74,7 +109,13 @@ function requestSummaryFromVapi() {
   }
 }
 
-function attachVapiEvents() {
+function attachVapiEventsOnce() {
+  if (!state.vapi || state.eventsAttached) {
+    return;
+  }
+
+  state.eventsAttached = true;
+
   state.vapi.on('call-start', () => {
     setStatus('Hívás/felvétel elindult, beszélhetsz magyarul.');
   });
@@ -122,11 +163,51 @@ function attachVapiEvents() {
 
   state.vapi.on('error', (error) => {
     console.error(error);
-    setStatus('Vapi hiba történt. Részletek a konzolban.');
+    ui.startBtn.disabled = false;
+    ui.stopBtn.disabled = true;
+    setStatus(`Vapi hiba: ${error?.message || 'ismeretlen hiba'}`);
   });
 }
 
+function resetUiForNewSession() {
+  state.allTranscript = '';
+  state.summaryRequested = false;
+  state.summaryText = '';
+  state.renderedFacts.clear();
+  ui.facts.innerHTML = '';
+  ui.summary.textContent = 'Még nincs összegzés.';
+  renderTranscript();
+}
+
+async function ensureMicrophonePermission() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((track) => track.stop());
+    return true;
+  } catch (error) {
+    console.error(error);
+    setStatus('A mikrofon nincs engedélyezve. Engedélyezd a böngészőben, majd próbáld újra.');
+    return false;
+  }
+}
+
+async function startCallWithFallback(assistantId) {
+  try {
+    await state.vapi.start(assistantId);
+    return;
+  } catch (firstError) {
+    console.warn('Vapi start with assistantId failed, retrying with object format...', firstError);
+  }
+
+  await state.vapi.start({ assistantId });
+}
+
 async function start() {
+  if (state.listening) {
+    setStatus('A felvétel már fut.');
+    return;
+  }
+
   const key = ui.publicKey.value.trim();
   const assistantId = ui.assistantId.value.trim();
 
@@ -135,37 +216,47 @@ async function start() {
     return;
   }
 
-  if (typeof Vapi === 'undefined') {
-    setStatus('A Vapi SDK nem töltődött be.');
+  ui.startBtn.disabled = true;
+  setStatus('Mikrofon ellenőrzése...');
+
+  const hasMic = await ensureMicrophonePermission();
+  if (!hasMic) {
+    ui.startBtn.disabled = false;
     return;
   }
 
-  state.vapi = new Vapi(key);
-  attachVapiEvents();
-
-  state.allTranscript = '';
-  state.summaryRequested = false;
-  state.summaryText = '';
-  state.renderedFacts.clear();
-  ui.facts.innerHTML = '';
-  ui.summary.textContent = 'Még nincs összegzés.';
-  renderTranscript();
-
-  setStatus('Mikrofon engedélyezése...');
-
   try {
-    await state.vapi.start(assistantId);
-    state.listening = true;
-    ui.startBtn.disabled = true;
-    ui.stopBtn.disabled = false;
+    const Vapi = await loadVapiConstructor();
+
+    if (!state.vapi) {
+      state.vapi = new Vapi(key);
+      attachVapiEventsOnce();
+    }
   } catch (error) {
     console.error(error);
-    setStatus('Nem sikerült elindítani a Vapi hívást.');
+    ui.startBtn.disabled = false;
+    setStatus(`A Vapi SDK nem töltődött be: ${error?.message || 'CDN hiba'}`);
+    return;
+  }
+
+  resetUiForNewSession();
+  setStatus('Kapcsolódás Vapi-hoz...');
+
+  try {
+    await startCallWithFallback(assistantId);
+    state.listening = true;
+    ui.stopBtn.disabled = false;
+    setStatus('Kapcsolódva. Beszélhetsz magyarul.');
+  } catch (error) {
+    console.error(error);
+    ui.startBtn.disabled = false;
+    ui.stopBtn.disabled = true;
+    setStatus(`Nem sikerült elindítani a Vapi hívást: ${error?.message || 'ismeretlen hiba'}`);
   }
 }
 
 function stop() {
-  if (!state.vapi) {
+  if (!state.vapi || !state.listening) {
     return;
   }
 
