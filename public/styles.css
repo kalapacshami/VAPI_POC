@@ -82,3 +82,11 @@ button {
   margin: 0;
   padding-left: 1.2rem;
 }
+
+
+label input[type='checkbox'] {
+  width: auto;
+  margin-right: 0.4rem;
+  padding: 0;
+  border: 0;
+}

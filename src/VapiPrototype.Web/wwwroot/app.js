@@ -1,27 +1,23 @@
 const state = {
   vapi: null,
+  activePublicKey: '',
   listening: false,
   allTranscript: '',
   summaryRequested: false,
   summaryText: '',
   renderedFacts: new Set(),
-  eventsAttached: false
+  eventsAttached: false,
+  audioObserver: null
 };
 
 const HUNGARIAN_SYSTEM_PROMPT = `A felhasználó magyarul beszél.
 Mindig magyarul dolgozd fel a beszédet, és magyarul írj válaszokat.
 Ne válaszolj hangosan: csak szöveges összegzést és adatkinyerést adj.`;
 
-
 let VapiConstructor = null;
 
 async function loadVapiConstructor() {
   if (VapiConstructor) {
-    return VapiConstructor;
-  }
-
-  if (typeof window !== 'undefined' && typeof window.Vapi !== 'undefined') {
-    VapiConstructor = window.Vapi;
     return VapiConstructor;
   }
 
@@ -48,6 +44,8 @@ async function loadVapiConstructor() {
 const ui = {
   publicKey: document.getElementById('publicKey'),
   assistantId: document.getElementById('assistantId'),
+  forceHu: document.getElementById('forceHu'),
+  muteAudio: document.getElementById('muteAudio'),
   startBtn: document.getElementById('startBtn'),
   stopBtn: document.getElementById('stopBtn'),
   status: document.getElementById('status'),
@@ -88,6 +86,67 @@ function containsRendben(text) {
   return /\brendben\b/i.test(text);
 }
 
+function muteAssistantAudioOutput() {
+  if (!ui.muteAudio?.checked) {
+    return;
+  }
+
+  const mediaElements = document.querySelectorAll('audio, video');
+  mediaElements.forEach((el) => {
+    el.muted = true;
+    el.volume = 0;
+  });
+}
+
+function startAudioMuteObserver() {
+  if (!ui.muteAudio?.checked || state.audioObserver) {
+    return;
+  }
+
+  state.audioObserver = new MutationObserver(() => muteAssistantAudioOutput());
+  state.audioObserver.observe(document.body, { childList: true, subtree: true });
+  muteAssistantAudioOutput();
+}
+
+function stopAudioMuteObserver() {
+  if (state.audioObserver) {
+    state.audioObserver.disconnect();
+    state.audioObserver = null;
+  }
+}
+
+function handleTranscriptText(text) {
+  if (!text || typeof text !== 'string') {
+    return;
+  }
+
+  state.allTranscript += `${text}\n`;
+  renderTranscript();
+  harvestFacts(text);
+
+  if (!state.summaryRequested && containsRendben(text)) {
+    requestSummaryFromVapi();
+  }
+}
+
+function extractTranscriptText(payload) {
+  if (!payload) {
+    return '';
+  }
+
+  if (typeof payload === 'string') {
+    return payload;
+  }
+
+  return (
+    payload.transcript ||
+    payload.text ||
+    payload.content ||
+    payload?.result?.transcript ||
+    ''
+  );
+}
+
 function requestSummaryFromVapi() {
   if (!state.vapi || state.summaryRequested) {
     return;
@@ -107,7 +166,8 @@ function requestSummaryFromVapi() {
         content: summaryPrompt
       }
     });
-  } catch (_error) {
+  } catch (error) {
+    console.error(error);
     ui.summary.textContent =
       'A Vapi összegzés küldése nem sikerült. Ellenőrizd a böngésző konzolt és a Vapi beállításokat.';
   }
@@ -121,15 +181,20 @@ function attachVapiEventsOnce() {
   state.eventsAttached = true;
 
   state.vapi.on('call-start', () => {
-    muteAssistantAudioOutput();
-    setStatus('Hívás/felvétel elindult (hangkimenet némítva), beszélhetsz magyarul.');
+    startAudioMuteObserver();
+    setStatus('Hívás/felvétel elindult, beszélhetsz magyarul.');
   });
 
   state.vapi.on('call-end', () => {
     state.listening = false;
     ui.startBtn.disabled = false;
     ui.stopBtn.disabled = true;
+    stopAudioMuteObserver();
     setStatus('Hívás lezárva.');
+  });
+
+  state.vapi.on('transcript', (payload) => {
+    handleTranscriptText(extractTranscriptText(payload));
   });
 
   state.vapi.on('message', (message) => {
@@ -137,19 +202,8 @@ function attachVapiEventsOnce() {
       return;
     }
 
-    if (message.type === 'transcript') {
-      const text = message.transcript || message.text || '';
-      if (!text) {
-        return;
-      }
-
-      state.allTranscript += `${text}\n`;
-      renderTranscript();
-      harvestFacts(text);
-
-      if (!state.summaryRequested && containsRendben(text)) {
-        requestSummaryFromVapi();
-      }
+    if (message.type === 'transcript' || message.type === 'transcript-partial') {
+      handleTranscriptText(extractTranscriptText(message));
       return;
     }
 
@@ -168,13 +222,19 @@ function attachVapiEventsOnce() {
 
   state.vapi.on('error', (error) => {
     console.error(error);
+    state.listening = false;
     ui.startBtn.disabled = false;
     ui.stopBtn.disabled = true;
+    stopAudioMuteObserver();
     setStatus(`Vapi hiba: ${error?.message || 'ismeretlen hiba'}`);
   });
 }
 
-function createAssistantOverrides() {
+function createAssistantOverrides(forceHu) {
+  if (!forceHu) {
+    return undefined;
+  }
+
   return {
     transcriber: {
       language: 'hu'
@@ -188,14 +248,6 @@ function createAssistantOverrides() {
       ]
     }
   };
-}
-
-function muteAssistantAudioOutput() {
-  const mediaElements = document.querySelectorAll('audio, video');
-  mediaElements.forEach((el) => {
-    el.muted = true;
-    el.volume = 0;
-  });
 }
 
 function resetUiForNewSession() {
@@ -220,17 +272,16 @@ async function ensureMicrophonePermission() {
   }
 }
 
-async function startCallWithFallback(assistantId) {
-  const overrides = createAssistantOverrides();
+async function startCallWithFallback(assistantId, forceHu) {
+  const overrides = createAssistantOverrides(forceHu);
 
-  try {
-    await state.vapi.start({
-      assistantId,
-      assistantOverrides: overrides
-    });
-    return;
-  } catch (firstError) {
-    console.warn('Vapi start with overrides failed, retrying minimal start...', firstError);
+  if (overrides) {
+    try {
+      await state.vapi.start({ assistantId, assistantOverrides: overrides });
+      return;
+    } catch (firstError) {
+      console.warn('Vapi start with overrides failed, retrying dashboard settings...', firstError);
+    }
   }
 
   await state.vapi.start(assistantId);
@@ -244,6 +295,7 @@ async function start() {
 
   const key = ui.publicKey.value.trim();
   const assistantId = ui.assistantId.value.trim();
+  const forceHu = Boolean(ui.forceHu?.checked);
 
   if (!key || !assistantId) {
     setStatus('Hiányzó Public Key vagy Assistant ID.');
@@ -259,13 +311,13 @@ async function start() {
     return;
   }
 
-  muteAssistantAudioOutput();
-
   try {
     const Vapi = await loadVapiConstructor();
 
-    if (!state.vapi) {
+    if (!state.vapi || state.activePublicKey !== key) {
       state.vapi = new Vapi(key);
+      state.activePublicKey = key;
+      state.eventsAttached = false;
       attachVapiEventsOnce();
     }
   } catch (error) {
@@ -276,17 +328,19 @@ async function start() {
   }
 
   resetUiForNewSession();
-  setStatus('Kapcsolódás Vapi-hoz...');
+  startAudioMuteObserver();
+  setStatus(forceHu ? 'Kapcsolódás Vapi-hoz (kényszerített magyar módban)...' : 'Kapcsolódás Vapi-hoz (dashboard beállításokkal)...');
 
   try {
-    await startCallWithFallback(assistantId);
+    await startCallWithFallback(assistantId, forceHu);
     state.listening = true;
     ui.stopBtn.disabled = false;
-    setStatus('Kapcsolódva. Beszélj magyarul — a rendszer magyar leiratot és szöveges összegzést készít.');
+    setStatus('Kapcsolódva. Beszélj magyarul; a kimenet szöveges leirat + összegzés.');
   } catch (error) {
     console.error(error);
     ui.startBtn.disabled = false;
     ui.stopBtn.disabled = true;
+    stopAudioMuteObserver();
     setStatus(`Nem sikerült elindítani a Vapi hívást: ${error?.message || 'ismeretlen hiba'}`);
   }
 }
@@ -300,6 +354,7 @@ function stop() {
   state.listening = false;
   ui.startBtn.disabled = false;
   ui.stopBtn.disabled = true;
+  stopAudioMuteObserver();
 }
 
 ui.startBtn.addEventListener('click', start);
