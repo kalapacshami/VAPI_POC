@@ -8,6 +8,10 @@ const state = {
   eventsAttached: false
 };
 
+const HUNGARIAN_SYSTEM_PROMPT = `A felhasználó magyarul beszél.
+Mindig magyarul dolgozd fel a beszédet, és magyarul írj válaszokat.
+Ne válaszolj hangosan: csak szöveges összegzést és adatkinyerést adj.`;
+
 
 let VapiConstructor = null;
 
@@ -93,7 +97,7 @@ function requestSummaryFromVapi() {
   setStatus('"Rendben" észlelve. Összegzés kérése a Vapi asszisztenstől...');
 
   const summaryPrompt =
-    'Kérlek magyarul foglald össze röviden pontokban az eddig elhangzott adatokat, neveket, számokat, feladatokat és döntéseket.';
+    'Kérlek kizárólag magyarul, rövid pontokban foglald össze az eddig elhangzott adatokat, neveket, számokat, feladatokat és döntéseket. Ne adj hangos választ.';
 
   try {
     state.vapi.send({
@@ -117,7 +121,8 @@ function attachVapiEventsOnce() {
   state.eventsAttached = true;
 
   state.vapi.on('call-start', () => {
-    setStatus('Hívás/felvétel elindult, beszélhetsz magyarul.');
+    muteAssistantAudioOutput();
+    setStatus('Hívás/felvétel elindult (hangkimenet némítva), beszélhetsz magyarul.');
   });
 
   state.vapi.on('call-end', () => {
@@ -169,6 +174,30 @@ function attachVapiEventsOnce() {
   });
 }
 
+function createAssistantOverrides() {
+  return {
+    transcriber: {
+      language: 'hu'
+    },
+    model: {
+      messages: [
+        {
+          role: 'system',
+          content: HUNGARIAN_SYSTEM_PROMPT
+        }
+      ]
+    }
+  };
+}
+
+function muteAssistantAudioOutput() {
+  const mediaElements = document.querySelectorAll('audio, video');
+  mediaElements.forEach((el) => {
+    el.muted = true;
+    el.volume = 0;
+  });
+}
+
 function resetUiForNewSession() {
   state.allTranscript = '';
   state.summaryRequested = false;
@@ -192,14 +221,19 @@ async function ensureMicrophonePermission() {
 }
 
 async function startCallWithFallback(assistantId) {
+  const overrides = createAssistantOverrides();
+
   try {
-    await state.vapi.start(assistantId);
+    await state.vapi.start({
+      assistantId,
+      assistantOverrides: overrides
+    });
     return;
   } catch (firstError) {
-    console.warn('Vapi start with assistantId failed, retrying with object format...', firstError);
+    console.warn('Vapi start with overrides failed, retrying minimal start...', firstError);
   }
 
-  await state.vapi.start({ assistantId });
+  await state.vapi.start(assistantId);
 }
 
 async function start() {
@@ -225,6 +259,8 @@ async function start() {
     return;
   }
 
+  muteAssistantAudioOutput();
+
   try {
     const Vapi = await loadVapiConstructor();
 
@@ -246,7 +282,7 @@ async function start() {
     await startCallWithFallback(assistantId);
     state.listening = true;
     ui.stopBtn.disabled = false;
-    setStatus('Kapcsolódva. Beszélhetsz magyarul.');
+    setStatus('Kapcsolódva. Beszélj magyarul — a rendszer magyar leiratot és szöveges összegzést készít.');
   } catch (error) {
     console.error(error);
     ui.startBtn.disabled = false;
