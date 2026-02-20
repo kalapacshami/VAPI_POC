@@ -7,7 +7,11 @@ const state = {
   summaryText: '',
   renderedFacts: new Set(),
   eventsAttached: false,
-  audioObserver: null
+  audioObserver: null,
+  lastTranscriptText: '',
+  lastTranscriptAt: 0,
+  errorCount: 0,
+  lastErrorAt: 0
 };
 
 const HUNGARIAN_SYSTEM_PROMPT = `A felhasználó magyarul beszél.
@@ -115,12 +119,48 @@ function stopAudioMuteObserver() {
   }
 }
 
+
+function isDuplicateTranscript(text) {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  const now = Date.now();
+  const isDuplicate = normalized === state.lastTranscriptText && now - state.lastTranscriptAt < 1500;
+
+  state.lastTranscriptText = normalized;
+  state.lastTranscriptAt = now;
+  return isDuplicate;
+}
+
+function maybeReportNonFatalError(error) {
+  const now = Date.now();
+  if (now - state.lastErrorAt > 8000) {
+    state.errorCount = 0;
+  }
+
+  state.errorCount += 1;
+  state.lastErrorAt = now;
+
+  if (state.errorCount <= 2) {
+    setStatus(`Kapcsolati figyelmeztetés: ${error?.message || 'átmeneti hiba'}. A hívás fut tovább.`);
+  } else {
+    setStatus('Több átmeneti hiba történt, de a rendszer próbálja folytatni a leiratot.');
+  }
+}
+
 function handleTranscriptText(text) {
   if (!text || typeof text !== 'string') {
     return;
   }
 
-  state.allTranscript += `${text}\n`;
+  const cleaned = text.trim();
+  if (cleaned.length < 2 || isDuplicateTranscript(cleaned)) {
+    return;
+  }
+
+  state.allTranscript += `${cleaned}\n`;
   renderTranscript();
   harvestFacts(text);
 
@@ -222,11 +262,20 @@ function attachVapiEventsOnce() {
 
   state.vapi.on('error', (error) => {
     console.error(error);
-    state.listening = false;
-    ui.startBtn.disabled = false;
-    ui.stopBtn.disabled = true;
-    stopAudioMuteObserver();
-    setStatus(`Vapi hiba: ${error?.message || 'ismeretlen hiba'}`);
+
+    const message = String(error?.message || '').toLowerCase();
+    const fatal = message.includes('unauthorized') || message.includes('invalid') || message.includes('forbidden');
+
+    if (fatal) {
+      state.listening = false;
+      ui.startBtn.disabled = false;
+      ui.stopBtn.disabled = true;
+      stopAudioMuteObserver();
+      setStatus(`Végzetes Vapi hiba: ${error?.message || 'ismeretlen hiba'}`);
+      return;
+    }
+
+    maybeReportNonFatalError(error);
   });
 }
 
@@ -254,6 +303,10 @@ function resetUiForNewSession() {
   state.allTranscript = '';
   state.summaryRequested = false;
   state.summaryText = '';
+  state.lastTranscriptText = '';
+  state.lastTranscriptAt = 0;
+  state.errorCount = 0;
+  state.lastErrorAt = 0;
   state.renderedFacts.clear();
   ui.facts.innerHTML = '';
   ui.summary.textContent = 'Még nincs összegzés.';
