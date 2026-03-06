@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="hu">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vapi Speech-to-Text Prototípus</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Magyar beszéd → Jegyzet + Összegzés</h1>
+      <p>
+        Beszélj magyarul. Amikor kimondod: <strong>"Rendben"</strong>, a rendszer lezárja a felvételt,
+        és Vapi segítségével összegzést kér. A "Rendben" után a hívás automatikusan leáll, nem készül több leirat. A prototípus a hangkimenetet némítja, csak szöveges eredményt mutat.
+      </p>
+
+      <section class="panel config">
+        <h2>Konfiguráció</h2>
+        <label>
+          Public Key
+          <input id="publicKey" type="text" value="1dde296e-f852-41f7-9bb6-473b13b07308" />
+        </label>
+        <label>
+          Assistant ID
+          <input id="assistantId" type="text" value="3aa26a46-ffa9-4f95-9fbc-8cdac3e3d9cf" />
+        </label>
+      </section>
+
+      <section class="panel config">
+        <h2>Mód</h2>
+        <label>
+          <input id="forceHu" type="checkbox" /> Kényszerített magyar transzkripció (ha a dashboard beállítás nem jó)
+        </label>
+        <label>
+          <input id="muteAudio" type="checkbox" checked /> Asszisztens hangkimenet némítása (csak szöveges mód)
+        </label>
+      </section>
+
+      <section class="actions">
+        <button id="startBtn">Felvétel indítása</button>
+        <button id="stopBtn" disabled>Felvétel leállítása</button>
+      </section>
+
+      <section class="panel">
+        <h2>Állapot</h2>
+        <p id="status">Készen áll.</p>
+      </section>
+
+      <section class="panel">
+        <h2>Élő leirat</h2>
+        <pre id="transcript"></pre>
+      </section>
+
+      <section class="panel">
+        <h2>Automatikus összegzés ("Rendben" után)</h2>
+        <div id="summary" class="summary-box">Még nincs összegzés.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Összegyűjtött kulcsinformációk</h2>
+        <ul id="facts"></ul>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

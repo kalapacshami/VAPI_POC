@@ -1,0 +1,13 @@
+{
+  "name": "vapi-hu-prototype",
+  "version": "1.0.0",
+  "description": "Prototype Vapi Hungarian speech-to-text and summary app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
